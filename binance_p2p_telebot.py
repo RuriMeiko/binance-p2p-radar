@@ -23,6 +23,10 @@ CONFIG_FILE = "bot_settings.json"
 KNOWN_SELLERS_FILE = "known_sellers.json"
 SUBSCRIBERS_FILE = "subscribers.json"
 API_URL = "https://p2p.binance.com/bapi/c2c/v2/friendly/c2c/adv/search"
+API_URLS = [
+    "https://p2p.binance.com/bapi/c2c/v2/friendly/c2c/adv/search",
+    "https://www.binance.com/bapi/c2c/v2/friendly/c2c/adv/search"
+]
 
 DEFAULT_CONFIG = {
     "is_running": True,
@@ -32,24 +36,30 @@ DEFAULT_CONFIG = {
     "min_usdt_amount": 0,
     "max_price": 0,
     "verified_merchant_only": False,
-    "check_interval": 3,
+    "check_interval": 1,
     "max_workers": 5,
     "pay_types": []
 }
 
-session = requests.Session()
-adapter = requests.adapters.HTTPAdapter(pool_connections=15, pool_maxsize=15)
-session.mount("https://", adapter)
-session.headers.update({
-    "Content-Type": "application/json",
-    "clientType": "android",
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-})
+sessions = []
+for _ in range(2):
+    s = requests.Session()
+    adapter = requests.adapters.HTTPAdapter(pool_connections=20, pool_maxsize=20)
+    s.mount("https://", adapter)
+    s.headers.update({
+        "Content-Type": "application/json",
+        "clientType": "android",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    })
+    sessions.append(s)
+
+session = sessions[0]
 
 config = DEFAULT_CONFIG.copy()
 known_sellers = set()
 subscribers = set()
 latest_sellers = {}
+recent_new_sellers = []
 stats = {
     "start_time": time.time(),
     "total_scans": 0,
@@ -250,7 +260,10 @@ def get_sellers_menu_markup():
 
 # ============================ ENGINE QUÉT DỮ LIỆU BINANCE P2P ============================
 def fetch_single_page(page):
-    time.sleep((page % 5) * 0.03)
+    time.sleep((page % 5) * 0.025)
+    target_url = API_URLS[page % len(API_URLS)]
+    sess = sessions[page % len(sessions)]
+
     publisher_type = "merchant" if config["verified_merchant_only"] else None
     payload = {
         "asset": config["asset"],
@@ -262,14 +275,17 @@ def fetch_single_page(page):
         "publisherType": publisher_type,
         "classifies": ["mass", "profession"]
     }
-    try:
-        resp = session.post(API_URL, json=payload, timeout=5)
-        if resp.status_code == 429:
-            time.sleep(5)
-            return None
-        return resp.json()
-    except Exception:
-        return None
+    for retry in range(2):
+        try:
+            resp = sess.post(target_url, json=payload, timeout=3.5)
+            if resp.status_code == 200:
+                return resp.json()
+            elif resp.status_code == 429:
+                time.sleep(0.15)
+                continue
+        except Exception:
+            time.sleep(0.1)
+    return None
 
 def fetch_all_sellers():
     r1 = fetch_single_page(1)
@@ -281,7 +297,7 @@ def fetch_all_sellers():
 
     all_pages_data = [r1]
     if total_pages > 1:
-        with ThreadPoolExecutor(max_workers=config["max_workers"]) as executor:
+        with ThreadPoolExecutor(max_workers=config.get("max_workers", 5)) as executor:
             rest_results = list(executor.map(fetch_single_page, range(2, total_pages + 1)))
             all_pages_data.extend(rest_results)
 
@@ -312,7 +328,7 @@ def fetch_all_sellers():
 
 # ============================ LUỒNG QUÉT CHÍNH (MONITOR THREAD) ============================
 def monitor_worker():
-    global known_sellers, stats, latest_sellers
+    global known_sellers, stats, latest_sellers, recent_new_sellers
 
     if not known_sellers:
         current, tp, ta = fetch_all_sellers()
@@ -323,7 +339,7 @@ def monitor_worker():
     while True:
         try:
             if not config["is_running"]:
-                time.sleep(2)
+                time.sleep(1)
                 continue
 
             t0 = time.time()
@@ -332,11 +348,14 @@ def monitor_worker():
             latest_sellers = current_sellers
 
             stats["total_scans"] += 1
-            stats["last_scan_cost"] = cost
+            stats["last_scan_cost"] = round(cost, 2)
             stats["last_total_ads"] = total_ads
             stats["last_total_sellers"] = len(current_sellers)
 
             new_sellers = []
+            now_ts = time.time()
+            now_str = datetime.now().strftime("%H:%M:%S")
+
             for nick, info in current_sellers.items():
                 if nick not in known_sellers:
                     price_val = float(info["price"] or 0)
@@ -349,13 +368,20 @@ def monitor_worker():
 
                     new_sellers.append(info)
                     known_sellers.add(nick)
+                    
+                    recent_new_sellers.insert(0, {
+                        **info,
+                        "discovered_at": now_ts,
+                        "discovered_str": now_str
+                    })
+                    if len(recent_new_sellers) > 40:
+                        recent_new_sellers.pop()
 
             if new_sellers:
                 save_sellers()
                 stats["alerts_sent"] += len(new_sellers)
 
                 for info in new_sellers:
-                    now_str = datetime.now().strftime("%H:%M:%S")
                     badge = "🏅 Tích Vàng" if info.get("userType") == "merchant" else "👤 Thường"
                     adv_url = f"https://p2p.binance.com/vi/trade/all-payments/{config['asset']}?fiat={config['fiat']}"
                     
@@ -395,10 +421,11 @@ def monitor_worker():
 
                     print(f"[{now_str}] Phát hiện nick mới: {info['nickName']} - Giá: {info['price']} VND (Trang {info['page']})")
 
-            time.sleep(config["check_interval"])
+            interval = config.get("check_interval", 1)
+            time.sleep(interval)
 
-        except Exception:
-            time.sleep(3)
+        except Exception as e:
+            time.sleep(1)
 
 # ============================ XỬ LÝ LỆNH & NÚT BẤM TELEGRAM ============================
 def handle_message(msg):
