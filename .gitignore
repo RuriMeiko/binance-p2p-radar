@@ -1,0 +1,9 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.log
+known_sellers.json
+bot_settings.json
+subscribers.json
+.env
+.DS_Store
