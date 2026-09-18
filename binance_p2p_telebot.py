@@ -49,6 +49,7 @@ session.headers.update({
 config = DEFAULT_CONFIG.copy()
 known_sellers = set()
 subscribers = set()
+latest_sellers = {}
 stats = {
     "start_time": time.time(),
     "total_scans": 0,
@@ -311,11 +312,12 @@ def fetch_all_sellers():
 
 # ============================ LUỒNG QUÉT CHÍNH (MONITOR THREAD) ============================
 def monitor_worker():
-    global known_sellers, stats
+    global known_sellers, stats, latest_sellers
 
     if not known_sellers:
         current, tp, ta = fetch_all_sellers()
         known_sellers = set(current.keys())
+        latest_sellers = current
         save_sellers()
 
     while True:
@@ -327,6 +329,7 @@ def monitor_worker():
             t0 = time.time()
             current_sellers, total_pages, total_ads = fetch_all_sellers()
             cost = time.time() - t0
+            latest_sellers = current_sellers
 
             stats["total_scans"] += 1
             stats["last_scan_cost"] = cost
