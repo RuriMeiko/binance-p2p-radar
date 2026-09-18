@@ -269,6 +269,29 @@ class RadarHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(DASHBOARD_HTML.encode("utf-8"))
 
+        elif self.path == "/api/debug":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            debug_results = {}
+            for target_url in [
+                "https://www.binance.com/bapi/c2c/v2/friendly/c2c/adv/search",
+                "https://p2p.binance.com/bapi/c2c/v2/friendly/c2c/adv/search"
+            ]:
+                try:
+                    t0 = time.time()
+                    payload = {"asset": "USDT", "fiat": "VND", "tradeType": "BUY", "page": 1, "rows": 5, "payTypes": []}
+                    resp = requests.post(target_url, json=payload, headers={"Content-Type": "application/json", "clientType": "android"}, timeout=6)
+                    debug_results[target_url] = {
+                        "status": resp.status_code,
+                        "cost": round(time.time() - t0, 3),
+                        "data_len": len(resp.text),
+                        "code": resp.json().get("code") if resp.status_code == 200 else None
+                    }
+                except Exception as e:
+                    debug_results[target_url] = {"error": str(e)}
+            self.wfile.write(json.dumps(debug_results, indent=2).encode("utf-8"))
+
         elif self.path == "/health":
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
