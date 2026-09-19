@@ -34,8 +34,8 @@ DEFAULT_CONFIG = {
     "min_usdt_amount": 0,
     "max_price": 0,
     "verified_merchant_only": False,
-    "check_interval": 1,
-    "max_workers": 5,
+    "check_interval": 2,
+    "max_workers": 4,
     "pay_types": []
 }
 
@@ -262,7 +262,7 @@ def get_sellers_menu_markup():
 
 # ============================ ENGINE QUÉT DỮ LIỆU BINANCE P2P ============================
 def fetch_single_page(page):
-    time.sleep((page % 5) * 0.02)
+    time.sleep((page % 4) * 0.05)
     publisher_type = "merchant" if config["verified_merchant_only"] else None
     payload = {
         "asset": config["asset"],
