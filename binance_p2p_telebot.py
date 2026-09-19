@@ -287,7 +287,7 @@ def fetch_single_page(page):
             time.sleep(0.1)
     return None
 
-def fetch_all_sellers():
+def fetch_all_sellers(max_pages=None):
     r1 = fetch_single_page(1)
     if not r1 or not r1.get("data"):
         log_event("WARN", "Failed to fetch page 1 from Binance P2P.")
@@ -295,11 +295,15 @@ def fetch_all_sellers():
 
     total_ads = r1.get("total", 0)
     total_pages = (total_ads + 19) // 20
+    if max_pages and max_pages < total_pages:
+        scan_target_pages = max_pages
+    else:
+        scan_target_pages = total_pages
 
     all_pages_data = [r1]
-    if total_pages > 1:
-        with ThreadPoolExecutor(max_workers=config.get("max_workers", 5)) as executor:
-            rest_results = list(executor.map(fetch_single_page, range(2, total_pages + 1)))
+    if scan_target_pages > 1:
+        with ThreadPoolExecutor(max_workers=config.get("max_workers", 4)) as executor:
+            rest_results = list(executor.map(fetch_single_page, range(2, scan_target_pages + 1)))
             all_pages_data.extend(rest_results)
 
     current_sellers = {}
@@ -347,21 +351,33 @@ def monitor_worker():
                 continue
 
             t0 = time.time()
-            current_sellers, total_pages, total_ads = fetch_all_sellers()
+            # Every 4th scan does a FULL sweep (all 24 pages), others do fast pulse (pages 1..4)
+            is_full_sweep = (stats["total_scans"] % 4 == 0)
+            max_p = None if is_full_sweep else 4
+
+            current_sellers, total_pages, total_ads = fetch_all_sellers(max_pages=max_p)
             cost = time.time() - t0
 
-            if current_sellers:
-                latest_sellers = current_sellers
-                stats["last_total_ads"] = total_ads
-                stats["last_total_sellers"] = len(current_sellers)
-            else:
-                log_event("WARN", f"Scan returned empty data. Retaining previous cache ({len(latest_sellers)} sellers).")
+            if not current_sellers:
+                log_event("WARN", "Binance rate limit or network issue detected. Cooling down for 30s...")
+                time.sleep(30)
+                continue
 
+            if is_full_sweep:
+                latest_sellers = current_sellers
+            else:
+                updated = dict(latest_sellers)
+                updated.update(current_sellers)
+                latest_sellers = updated
+
+            stats["last_total_ads"] = total_ads
+            stats["last_total_sellers"] = len(latest_sellers)
             stats["total_scans"] += 1
             stats["last_scan_cost"] = round(cost, 2)
 
-            if stats["total_scans"] % 25 == 0:
-                log_event("SCAN", f"Scan #{stats['total_scans']}: {stats['last_total_ads']} ads, {stats['last_total_sellers']} sellers in {cost:.2f}s")
+            if stats["total_scans"] % 15 == 0:
+                mode_str = "Full 24-pages" if is_full_sweep else "Fast Pulse (Top 4)"
+                log_event("SCAN", f"Scan #{stats['total_scans']} [{mode_str}]: {stats['last_total_ads']} ads, {stats['last_total_sellers']} sellers in {cost:.2f}s")
 
             new_sellers = []
             now_ts = time.time()
