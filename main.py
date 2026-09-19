@@ -572,16 +572,23 @@ class RadarHandler(BaseHTTPRequestHandler):
 
             elif self.path == "/api/debug":
                 debug_results = {}
-                for target_url in [binance_p2p_telebot.API_URL]:
+                test_urls = [
+                    "https://p2p.binance.com/bapi/c2c/v2/friendly/c2c/adv/search",
+                    "https://c2c.binance.com/bapi/c2c/v2/friendly/c2c/adv/search"
+                ]
+                for target_url in test_urls:
                     try:
                         t0 = time.time()
                         payload = {"asset": "USDT", "fiat": "VND", "tradeType": "BUY", "page": 1, "rows": 5, "payTypes": []}
-                        resp = requests.post(target_url, json=payload, headers={"Content-Type": "application/json", "clientType": "android"}, timeout=5)
+                        resp = requests.post(target_url, json=payload, headers={"Content-Type": "application/json", "clientType": "web", "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}, timeout=5)
                         debug_results[target_url] = {
                             "status": resp.status_code,
                             "cost": round(time.time() - t0, 3),
                             "data_len": len(resp.text),
-                            "code": resp.json().get("code") if resp.status_code == 200 else None
+                            "server": resp.headers.get("server"),
+                            "cf_ray": resp.headers.get("cf-ray"),
+                            "retry_after": resp.headers.get("retry-after"),
+                            "body_sample": resp.text[:200]
                         }
                     except Exception as e:
                         debug_results[target_url] = {"error": str(e)}
