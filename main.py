@@ -69,12 +69,17 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                     <span class="text-[10px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded bg-yellow-400/10 text-yellow-400 border border-yellow-400/30">Ultra Realtime</span>
                 </div>
                 <p class="text-xs text-gray-400 flex items-center gap-2 mt-0.5">
-                    <span>Quét song song 2 đầu cổng</span> • <span class="text-green-400 font-mono" id="scan-rate-badge">1.2s/vòng</span>
+                    <span>Cổng chuyên dụng P2P</span> • <span class="text-green-400 font-mono" id="scan-rate-badge">1.0s/vòng</span>
                 </p>
             </div>
         </div>
 
         <div class="flex items-center gap-2 sm:gap-3 flex-wrap">
+            <!-- Server Log Button -->
+            <button onclick="toggleLogsModal()" class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-[#2b313a] text-gray-300 hover:text-white transition-all flex items-center gap-1.5 border border-[#363d47]">
+                📋 Log Server
+            </button>
+
             <!-- Audio toggle -->
             <button onclick="toggleAudio()" id="btn-audio" class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-[#2b313a] text-gray-300 hover:text-white transition-all flex items-center gap-1.5">
                 🔕 Âm Báo: <b>TẮT</b>
@@ -115,7 +120,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
             <div class="bg-[#181a20] border border-[#2b313a] rounded-xl p-4 sm:p-5 relative overflow-hidden">
                 <p class="text-xs text-gray-400 font-medium uppercase tracking-wider">Tốc Độ Quét Sàn</p>
-                <p class="text-xl sm:text-2xl font-bold text-green-400 mt-1 font-mono" id="scan-cost">~1.2s</p>
+                <p class="text-xl sm:text-2xl font-bold text-green-400 mt-1 font-mono" id="scan-cost">~1.0s</p>
                 <p class="text-xs text-gray-400 mt-1">Quét sạch 24 trang song song</p>
             </div>
 
@@ -175,7 +180,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                         <span id="last-update" class="font-mono">Đang kết nối...</span>
                     </span>
                     <span class="text-gray-600">•</span>
-                    <span class="text-gray-400 font-mono" id="latency-badge">RAM 2ms</span>
+                    <span class="text-gray-400 font-mono" id="latency-badge">RAM 1ms</span>
                 </div>
             </div>
             <div class="overflow-x-auto max-h-[700px]">
@@ -206,8 +211,36 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         </div>
     </main>
 
+    <!-- Server Logs Modal -->
+    <div id="logs-modal" class="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm hidden flex items-center justify-center p-4">
+        <div class="bg-[#181a20] border border-[#2b313a] rounded-2xl w-full max-w-4xl max-h-[85vh] flex flex-col shadow-2xl overflow-hidden">
+            <div class="px-6 py-4 border-b border-[#2b313a] flex items-center justify-between bg-[#1f242c]">
+                <div class="flex items-center gap-2">
+                    <span class="text-green-400 font-mono text-base">●</span>
+                    <h3 class="font-bold text-white text-sm sm:text-base">Nhật Ký Máy Chủ (Server Live Logs)</h3>
+                    <span class="text-xs bg-[#2b313a] text-gray-400 px-2 py-0.5 rounded font-mono">/api/logs</span>
+                </div>
+                <div class="flex items-center gap-2">
+                    <button onclick="fetchServerLogs()" class="px-2.5 py-1 rounded-lg bg-[#2b313a] hover:bg-[#363d47] text-gray-300 hover:text-white text-xs font-semibold flex items-center gap-1">
+                        🔄 Cập nhật
+                    </button>
+                    <button onclick="toggleLogsModal()" class="p-1 rounded-lg bg-[#2b313a] hover:bg-red-500/20 hover:text-red-400 text-gray-400 text-base">
+                        ✕
+                    </button>
+                </div>
+            </div>
+            <pre class="p-4 flex-1 overflow-y-auto font-mono text-xs text-gray-300 bg-[#0d1015] select-text leading-relaxed whitespace-pre-wrap" id="logs-content">Đang tải log...</pre>
+            <div class="px-6 py-3 border-t border-[#2b313a] bg-[#181a20] flex items-center justify-between text-xs text-gray-500">
+                <span>Tự động làm mới mỗi 3s khi mở modal</span>
+                <button onclick="copyLogs()" class="hover:text-yellow-400 transition-colors font-medium">
+                    📋 Sao chép log
+                </button>
+            </div>
+        </div>
+    </div>
+
     <footer class="border-t border-[#1e2329] text-center text-xs text-gray-500 py-6">
-        Binance P2P VIP Radar Monitor System • High-Frequency Engine (2 Endpoints • Auto Backoff • Zero-Latency Cache)
+        Binance P2P VIP Radar Monitor System • In-Memory Zero-Latency Cache Engine
     </footer>
 
     <script>
@@ -218,6 +251,41 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         let knownNicks = new Set();
         let isFirstLoad = true;
         let audioEnabled = localStorage.getItem('radar_audio') === 'true';
+        let logsModalOpen = false;
+        let logsInterval = null;
+
+        // Logs modal handler
+        function toggleLogsModal() {
+            const modal = document.getElementById('logs-modal');
+            logsModalOpen = !logsModalOpen;
+            if (logsModalOpen) {
+                modal.classList.remove('hidden');
+                fetchServerLogs();
+                logsInterval = setInterval(fetchServerLogs, 3000);
+            } else {
+                modal.classList.add('hidden');
+                clearInterval(logsInterval);
+            }
+        }
+
+        async function fetchServerLogs() {
+            try {
+                const res = await fetch('/api/logs');
+                const text = await res.text();
+                const pre = document.getElementById('logs-content');
+                pre.innerText = text;
+                pre.scrollTop = pre.scrollHeight;
+            } catch (err) {
+                document.getElementById('logs-content').innerText = "Lỗi khi lấy log: " + err;
+            }
+        }
+
+        function copyLogs() {
+            const text = document.getElementById('logs-content').innerText;
+            navigator.clipboard.writeText(text).then(() => {
+                alert('Đã sao chép log vào clipboard!');
+            });
+        }
 
         // Web Audio API notification sound
         function playAlertChime() {
@@ -232,8 +300,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 gain.connect(ctx.destination);
                 
                 osc.type = 'sine';
-                osc.frequency.setValueAtTime(784, ctx.currentTime); // G5
-                osc.frequency.exponentialRampToValueAtTime(1175, ctx.currentTime + 0.12); // D6
+                osc.frequency.setValueAtTime(784, ctx.currentTime);
+                osc.frequency.exponentialRampToValueAtTime(1175, ctx.currentTime + 0.12);
                 
                 gain.gain.setValueAtTime(0.2, ctx.currentTime);
                 gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.25);
@@ -433,7 +501,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 document.getElementById('count-merchant').innerText = allSellers.filter(s => s.userType === 'merchant').length;
                 document.getElementById('alerts-count').innerText = (data.stats.alerts_sent || 0);
                 
-                const lastCost = data.stats.last_scan_cost || 1.2;
+                const lastCost = data.stats.last_scan_cost || 1.0;
                 document.getElementById('scan-cost').innerText = lastCost + 's';
                 document.getElementById('scan-rate-badge').innerText = lastCost + 's/vòng';
                 if (data.stats.last_total_ads) {
@@ -464,92 +532,115 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 """
 
 class RadarHandler(BaseHTTPRequestHandler):
+    def send_json(self, data, status=200):
+        body = json.dumps(data, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "close")
+        self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def send_html(self, html_text):
+        body = html_text.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def send_text(self, text_str):
+        body = text_str.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "close")
+        self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self):
-        if self.path in ("/", "/index.html"):
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.end_headers()
-            self.wfile.write(DASHBOARD_HTML.encode("utf-8"))
+        try:
+            if self.path in ("/", "/index.html"):
+                self.send_html(DASHBOARD_HTML)
 
-        elif self.path == "/api/debug":
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            debug_results = {}
-            for target_url in binance_p2p_telebot.API_URLS:
-                try:
-                    t0 = time.time()
-                    payload = {"asset": "USDT", "fiat": "VND", "tradeType": "BUY", "page": 1, "rows": 5, "payTypes": []}
-                    resp = requests.post(target_url, json=payload, headers={"Content-Type": "application/json", "clientType": "android"}, timeout=6)
-                    debug_results[target_url] = {
-                        "status": resp.status_code,
-                        "cost": round(time.time() - t0, 3),
-                        "data_len": len(resp.text),
-                        "code": resp.json().get("code") if resp.status_code == 200 else None
-                    }
-                except Exception as e:
-                    debug_results[target_url] = {"error": str(e)}
-            self.wfile.write(json.dumps(debug_results, indent=2).encode("utf-8"))
+            elif self.path == "/api/logs":
+                logs_text = "\n".join(binance_p2p_telebot.LOG_BUFFER)
+                self.send_text(logs_text or "Chưa có nhật ký ghi nhận.")
 
-        elif self.path == "/health":
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            res = {
-                "status": "ok",
-                "uptime": int(time.time() - binance_p2p_telebot.stats["start_time"]),
-                "known_sellers": len(binance_p2p_telebot.known_sellers),
-                "total_scans": binance_p2p_telebot.stats["total_scans"]
-            }
-            self.wfile.write(json.dumps(res).encode("utf-8"))
+            elif self.path == "/api/debug":
+                debug_results = {}
+                for target_url in [binance_p2p_telebot.API_URL]:
+                    try:
+                        t0 = time.time()
+                        payload = {"asset": "USDT", "fiat": "VND", "tradeType": "BUY", "page": 1, "rows": 5, "payTypes": []}
+                        resp = requests.post(target_url, json=payload, headers={"Content-Type": "application/json", "clientType": "android"}, timeout=5)
+                        debug_results[target_url] = {
+                            "status": resp.status_code,
+                            "cost": round(time.time() - t0, 3),
+                            "data_len": len(resp.text),
+                            "code": resp.json().get("code") if resp.status_code == 200 else None
+                        }
+                    except Exception as e:
+                        debug_results[target_url] = {"error": str(e)}
+                self.send_json(debug_results)
 
-        elif self.path == "/api/status":
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            
-            # Use In-Memory Cache (INSTANT 1ms RESPONSE, NEVER LAGS)
-            cur = binance_p2p_telebot.latest_sellers
-            if not cur:
-                cur, tp, ta = binance_p2p_telebot.fetch_all_sellers()
-                binance_p2p_telebot.latest_sellers = cur
+            elif self.path == "/health":
+                res = {
+                    "status": "ok",
+                    "uptime": int(time.time() - binance_p2p_telebot.stats["start_time"]),
+                    "known_sellers": len(binance_p2p_telebot.known_sellers),
+                    "total_scans": binance_p2p_telebot.stats["total_scans"]
+                }
+                self.send_json(res)
 
-            # Sort all sellers by price ascending
-            sorted_sellers = sorted(cur.values(), key=lambda x: float(x.get("price", 99999999)))
-            
-            payload = {
-                "known_sellers_count": len(binance_p2p_telebot.known_sellers),
-                "subscribers_count": len(binance_p2p_telebot.subscribers),
-                "stats": binance_p2p_telebot.stats,
-                "sellers": sorted_sellers,
-                "recent_new_sellers": binance_p2p_telebot.recent_new_sellers,
-                "config": binance_p2p_telebot.config
-            }
-            self.wfile.write(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+            elif self.path == "/api/status":
+                # 100% Non-blocking instant RAM read (< 1ms)
+                cur = binance_p2p_telebot.latest_sellers or {}
+                sellers_list = list(cur.values())
+                sorted_sellers = sorted(sellers_list, key=lambda x: float(x.get("price") or 99999999))
+                
+                payload = {
+                    "known_sellers_count": len(binance_p2p_telebot.known_sellers),
+                    "subscribers_count": len(binance_p2p_telebot.subscribers),
+                    "stats": binance_p2p_telebot.stats,
+                    "sellers": sorted_sellers,
+                    "recent_new_sellers": list(binance_p2p_telebot.recent_new_sellers),
+                    "config": binance_p2p_telebot.config
+                }
+                self.send_json(payload)
 
-        else:
-            self.send_response(404)
-            self.end_headers()
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+        except Exception as e:
+            binance_p2p_telebot.log_event("ERROR", f"HTTP Handler Error on {self.path}: {e}")
 
     def log_message(self, format, *args):
-        pass
+        msg = format % args
+        # Only log errors or specific endpoints to avoid buffer noise
+        if " 404 " in msg or " 500 " in msg or "/api/logs" not in msg:
+            binance_p2p_telebot.log_event("HTTP", msg)
 
 def main():
-    print("=" * 68)
-    print("🚀 STARTING BINANCE P2P VIP RADAR & REALTIME DASHBOARD")
-    print(f"• Web Server Port : {PORT}")
-    print(f"• Concurrency Mode: ThreadingHTTPServer (High Frequency)")
-    print(f"• Scan Engines    : 2 Dual Endpoints (p2p & www)")
-    print("=" * 68)
+    binance_p2p_telebot.log_event("SYSTEM", "=" * 60)
+    binance_p2p_telebot.log_event("SYSTEM", "🚀 STARTING BINANCE P2P VIP RADAR & REALTIME DASHBOARD")
+    binance_p2p_telebot.log_event("SYSTEM", f"• Web Server Port : {PORT}")
+    binance_p2p_telebot.log_event("SYSTEM", f"• Mode            : ThreadingHTTPServer (High-Frequency)")
+    binance_p2p_telebot.log_event("SYSTEM", f"• API Gateway     : {binance_p2p_telebot.API_URL}")
+    binance_p2p_telebot.log_event("SYSTEM", "=" * 60)
 
     binance_p2p_telebot.start_background_threads()
 
     server = ThreadingHTTPServer(("0.0.0.0", PORT), RadarHandler)
-    print(f"[+] Real-Time Web Dashboard listening on http://0.0.0.0:{PORT}")
+    binance_p2p_telebot.log_event("SYSTEM", f"[+] Real-Time Web Dashboard listening on http://0.0.0.0:{PORT}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print("[!] Stopping server...")
+        binance_p2p_telebot.log_event("SYSTEM", "[!] Stopping server...")
         server.server_close()
 
 if __name__ == "__main__":

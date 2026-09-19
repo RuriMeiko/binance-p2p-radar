@@ -12,6 +12,7 @@ import json
 import time
 import threading
 import requests
+import collections
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 
@@ -23,10 +24,7 @@ CONFIG_FILE = "bot_settings.json"
 KNOWN_SELLERS_FILE = "known_sellers.json"
 SUBSCRIBERS_FILE = "subscribers.json"
 API_URL = "https://p2p.binance.com/bapi/c2c/v2/friendly/c2c/adv/search"
-API_URLS = [
-    "https://p2p.binance.com/bapi/c2c/v2/friendly/c2c/adv/search",
-    "https://www.binance.com/bapi/c2c/v2/friendly/c2c/adv/search"
-]
+API_URLS = [API_URL]
 
 DEFAULT_CONFIG = {
     "is_running": True,
@@ -41,25 +39,29 @@ DEFAULT_CONFIG = {
     "pay_types": []
 }
 
-sessions = []
-for _ in range(2):
-    s = requests.Session()
-    adapter = requests.adapters.HTTPAdapter(pool_connections=20, pool_maxsize=20)
-    s.mount("https://", adapter)
-    s.headers.update({
-        "Content-Type": "application/json",
-        "clientType": "android",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    })
-    sessions.append(s)
-
-session = sessions[0]
+session = requests.Session()
+adapter = requests.adapters.HTTPAdapter(pool_connections=25, pool_maxsize=25)
+session.mount("https://", adapter)
+session.headers.update({
+    "Content-Type": "application/json",
+    "clientType": "android",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+})
+sessions = [session]
 
 config = DEFAULT_CONFIG.copy()
 known_sellers = set()
 subscribers = set()
 latest_sellers = {}
 recent_new_sellers = []
+LOG_BUFFER = collections.deque(maxlen=400)
+
+def log_event(level, msg):
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    line = f"[{now_str}] [{level}] {msg}"
+    LOG_BUFFER.append(line)
+    print(line, flush=True)
+
 stats = {
     "start_time": time.time(),
     "total_scans": 0,
@@ -260,10 +262,7 @@ def get_sellers_menu_markup():
 
 # ============================ ENGINE QUÉT DỮ LIỆU BINANCE P2P ============================
 def fetch_single_page(page):
-    time.sleep((page % 5) * 0.025)
-    target_url = API_URLS[page % len(API_URLS)]
-    sess = sessions[page % len(sessions)]
-
+    time.sleep((page % 5) * 0.02)
     publisher_type = "merchant" if config["verified_merchant_only"] else None
     payload = {
         "asset": config["asset"],
@@ -277,11 +276,12 @@ def fetch_single_page(page):
     }
     for retry in range(2):
         try:
-            resp = sess.post(target_url, json=payload, timeout=3.5)
+            resp = session.post(API_URL, json=payload, timeout=3.5)
             if resp.status_code == 200:
                 return resp.json()
             elif resp.status_code == 429:
-                time.sleep(0.15)
+                log_event("WARN", f"Binance P2P page {page} hit 429, micro-backoff retry...")
+                time.sleep(0.2)
                 continue
         except Exception:
             time.sleep(0.1)
@@ -290,6 +290,7 @@ def fetch_single_page(page):
 def fetch_all_sellers():
     r1 = fetch_single_page(1)
     if not r1 or not r1.get("data"):
+        log_event("WARN", "Failed to fetch page 1 from Binance P2P.")
         return {}, 0, 0
 
     total_ads = r1.get("total", 0)
@@ -330,11 +331,14 @@ def fetch_all_sellers():
 def monitor_worker():
     global known_sellers, stats, latest_sellers, recent_new_sellers
 
+    log_event("INIT", "Starting Binance P2P monitor background worker...")
     if not known_sellers:
         current, tp, ta = fetch_all_sellers()
-        known_sellers = set(current.keys())
-        latest_sellers = current
-        save_sellers()
+        if current:
+            known_sellers = set(current.keys())
+            latest_sellers = current
+            save_sellers()
+            log_event("INIT", f"Initial market baseline loaded: {len(known_sellers)} sellers.")
 
     while True:
         try:
@@ -345,12 +349,19 @@ def monitor_worker():
             t0 = time.time()
             current_sellers, total_pages, total_ads = fetch_all_sellers()
             cost = time.time() - t0
-            latest_sellers = current_sellers
+
+            if current_sellers:
+                latest_sellers = current_sellers
+                stats["last_total_ads"] = total_ads
+                stats["last_total_sellers"] = len(current_sellers)
+            else:
+                log_event("WARN", f"Scan returned empty data. Retaining previous cache ({len(latest_sellers)} sellers).")
 
             stats["total_scans"] += 1
             stats["last_scan_cost"] = round(cost, 2)
-            stats["last_total_ads"] = total_ads
-            stats["last_total_sellers"] = len(current_sellers)
+
+            if stats["total_scans"] % 25 == 0:
+                log_event("SCAN", f"Scan #{stats['total_scans']}: {stats['last_total_ads']} ads, {stats['last_total_sellers']} sellers in {cost:.2f}s")
 
             new_sellers = []
             now_ts = time.time()
@@ -380,6 +391,8 @@ def monitor_worker():
             if new_sellers:
                 save_sellers()
                 stats["alerts_sent"] += len(new_sellers)
+                for info in new_sellers:
+                    log_event("ALERT", f"New seller: {info['nickName']} - {info['price']} VND (Page {info['page']})")
 
                 for info in new_sellers:
                     badge = "🏅 Tích Vàng" if info.get("userType") == "merchant" else "👤 Thường"
@@ -419,12 +432,11 @@ def monitor_worker():
                     for cid in recipients:
                         send_message(cid, alert_card, inline_kb)
 
-                    print(f"[{now_str}] Phát hiện nick mới: {info['nickName']} - Giá: {info['price']} VND (Trang {info['page']})")
-
             interval = config.get("check_interval", 1)
             time.sleep(interval)
 
         except Exception as e:
+            log_event("ERROR", f"Exception in monitor loop: {e}")
             time.sleep(1)
 
 # ============================ XỬ LÝ LỆNH & NÚT BẤM TELEGRAM ============================
